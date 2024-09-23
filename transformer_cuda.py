@@ -7,7 +7,6 @@ import math
 attention_cuda = load(
     name="attention_cuda",
     sources=["multi_head_attention.cu"],
-    extra_cuda_cflags=["-O2"],
     verbose=True,
 )
 
@@ -179,26 +178,20 @@ if __name__ == "__main__":
     torch.manual_seed(42)
     torch.cuda.manual_seed_all(42)
 
-    batch_size = 2
     src_seq_len = 10
     tgt_seq_len = 10
     vocab_size = 1000
-    d_model = 128
-    num_heads = 8
-    num_encoder_layers = 3
-    num_decoder_layers = 3
-    dim_ff = 512
 
     # Sample tokens
-    src = torch.randint(0, vocab_size, (batch_size, src_seq_len)).cuda()
-    tgt = torch.randint(0, vocab_size, (batch_size, tgt_seq_len)).cuda()
+    src = torch.randint(0, vocab_size, (2, src_seq_len)).cuda()
+    tgt = torch.randint(0, vocab_size, (2, tgt_seq_len)).cuda()
 
     model = Transformer(
-        d_model=d_model,
-        num_heads=num_heads,
-        num_encoder_layers=num_encoder_layers,
-        num_decoder_layers=num_decoder_layers,
-        dim_ff=dim_ff,
+        d_model=128,
+        num_heads=8,
+        num_encoder_layers=3,
+        num_decoder_layers=3,
+        dim_ff=512,
         dropout=0.1,
         vocab_size=vocab_size,
         max_seq_len=max(src_seq_len, tgt_seq_len),

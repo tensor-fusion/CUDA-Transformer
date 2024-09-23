@@ -77,7 +77,52 @@ __global__ void attention_kernel(
     out[qkv_offset + tid] = static_cast<scalar_t>(out_value);
 }
 
-torch::Tensor multi_head_attention_cuda(
+template <typename scalar_t>
+__global__ void attention_backward_kernel(
+    const scalar_t* __restrict__ grad_out,
+    const scalar_t* __restrict__ q,
+    const scalar_t* __restrict__ k,
+    const scalar_t* __restrict__ v,
+    const scalar_t* __restrict__ out,
+    scalar_t* __restrict__ grad_q,
+    scalar_t* __restrict__ grad_k,
+    scalar_t* __restrict__ grad_v,
+    const int batch_size,
+    const int seq_len,
+    const int num_heads,
+    const int head_dim
+) {
+    const int batch_id = blockIdx.z;
+    const int head_id = blockIdx.y;
+    const int seq_id = blockIdx.x;
+
+    const int tid = threadIdx.x;
+
+    if (seq_id >= seq_len || tid >= head_dim) return;
+
+    const int qkv_offset = ((batch_id * num_heads + head_id) * seq_len + seq_id) * head_dim;
+    const int kv_seq_offset = (batch_id * num_heads + head_id) * seq_len * head_dim;
+
+    scalar_t q_val = q[qkv_offset + tid];
+    scalar_t k_val = k[kv_seq_offset + seq_id * head_dim + tid];
+    scalar_t v_val = v[kv_seq_offset + seq_id * head_dim + tid];
+    scalar_t out_val = out[qkv_offset + tid];
+    scalar_t grad_out_val = grad_out[qkv_offset + tid];
+
+    // Placeholder for actual gradient computations dL/dS dL/dQ, dL/dK, dL/dV
+
+    scalar_t grad_s = grad_out_val * v_val; // Placeholder
+
+    scalar_t grad_q_val = grad_s * k_val / sqrtf((float)head_dim);
+    scalar_t grad_k_val = grad_s * q_val / sqrtf((float)head_dim);
+    scalar_t grad_v_val = grad_out_val * 1.0f; // Placeholder
+
+    atomicAdd(&grad_q[qkv_offset + tid], grad_q_val);
+    atomicAdd(&grad_k[kv_seq_offset + seq_id * head_dim + tid], grad_k_val);
+    atomicAdd(&grad_v[kv_seq_offset + seq_id * head_dim + tid], grad_v_val);
+}
+
+torch::Tensor multi_head_attention_forward(
     torch::Tensor q,
     torch::Tensor k,
     torch::Tensor v
@@ -109,10 +154,51 @@ torch::Tensor multi_head_attention_cuda(
     }));
 
     TORCH_CHECK(cudaGetLastError() == cudaSuccess, "attention_kernel launch failed");
-
     return out;
 }
 
+std::vector<torch::Tensor> multi_head_attention_backward(
+    torch::Tensor grad_out,
+    torch::Tensor q,
+    torch::Tensor k,
+    torch::Tensor v,
+    torch::Tensor out
+) {
+    const auto batch_size = q.size(0);
+    const auto num_heads = q.size(1);
+    const auto seq_len = q.size(2);
+    const auto head_dim = q.size(3);
+
+    auto grad_q = torch::zeros_like(q);
+    auto grad_k = torch::zeros_like(k);
+    auto grad_v = torch::zeros_like(v);
+
+    const dim3 threads(head_dim);
+    const dim3 blocks(seq_len, num_heads, batch_size);
+
+    AT_DISPATCH_FLOATING_TYPES_AND_HALF(q.scalar_type(), "attention_backward_kernel", ([&] {
+        attention_backward_kernel<scalar_t><<<blocks, threads>>>(
+            grad_out.data_ptr<scalar_t>(),
+            q.data_ptr<scalar_t>(),
+            k.data_ptr<scalar_t>(),
+            v.data_ptr<scalar_t>(),
+            out.data_ptr<scalar_t>(),
+            grad_q.data_ptr<scalar_t>(),
+            grad_k.data_ptr<scalar_t>(),
+            grad_v.data_ptr<scalar_t>(),
+            batch_size,
+            seq_len,
+            num_heads,
+            head_dim
+        );
+    }));
+
+    TORCH_CHECK(cudaGetLastError() == cudaSuccess, "attention_backward_kernel launch failed");
+    return {grad_q, grad_k, grad_v};
+}
+
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("multi_head_attention", &multi_head_attention_cuda, "Multi-head attention");
+    m.def("multi_head_attention_forward", &multi_head_attention_forward, "Multi-head attention forward");
+    m.def("multi_head_attention_backward", &multi_head_attention_backward, "Multi-head attention backward");
 }
